@@ -43,20 +43,20 @@ class Finanzes
 		$this->currentDay = $dayStats->current_day;
 		$this->viewDay = $dayStats->viewing_day;
 			
-			$output .= 'now currentDay = ' . $this->currentDay . '<br />';
+		$output .= 'now currentDay = ' . $this->currentDay . '<br />';
 		//$this->currentDay++;
 		
-		$this->army_properties = $this->FinanzesDB->get_results("SELECT description, name, plural, field_name, unit, cost_per_unit, loss_unit, loss_print, cost_pretty_print FROM army_properties");
-		$this->industry_properties = $this->FinanzesDB->get_results("SELECT description, name, plural, field_name, unit, cost_per_unit, cost_pretty_print FROM industry_properties");
-		$this->bank_properties = $this->FinanzesDB->get_results("SELECT Name, pay_field_name, received_field_name FROM bank_properties");
+		$this->army_properties = $this->FinanzesDB->get_results("SELECT description, name, plural, field_name, unit, cost_per_unit, resell_per_unit, value_per_unit, loss_unit, loss_print, trader_table, value_pretty_print FROM army_properties");
+		$this->industry_properties = $this->FinanzesDB->get_results("SELECT description, name, plural, field_name, unit, cost_per_unit, resell_per_unit, trader_table, value_per_unit, value_pretty_print FROM industry_properties");
+		$this->bank_properties = $this->FinanzesDB->get_results("SELECT Name, pay_field_name, received_field_name, readonly FROM bank_properties");
 		$this->entities = $this->FinanzesDB->get_results("SELECT Name, bank_table, external_bank_field, internal_paid, internal_received, aggregate, link FROM entities");
 		$this->consumables = $this->FinanzesDB->get_results("SELECT Name, field_name, units_pretty_print, formula FROM consumption_properties");
 		$this->taxes = $this->FinanzesDB->get_results("SELECT Name, field_name, money_recd_field_name FROM tax_types");
 		$this->population = $this->FinanzesDB->get_results("SELECT Name, field_name, readonly FROM population_properties");
 		$this->scenarios = $this->FinanzesDB->get_results("SELECT Title, scene FROM scenarios WHERE day=" . $this->viewDay );
 		$this->weathers = $this->FinanzesDB->get_results("SELECT id, description FROM available_weather");
-		$this->arms_trader_properties = $this->FinanzesDB->get_results("SELECT description, name, plural, field_name, unit, cost_per_unit, cost_pretty_print FROM arms_trader_properties");
-		$this->real_estate_properties = $this->FinanzesDB->get_results("SELECT description, name, plural, field_name, unit, cost_per_unit, cost_pretty_print FROM real_estate_properties");
+		$this->arms_trader_properties = $this->FinanzesDB->get_results("SELECT description, name, plural, field_name, unit, value_per_unit, value_pretty_print FROM arms_trader_properties");
+		$this->real_estate_properties = $this->FinanzesDB->get_results("SELECT description, name, plural, field_name, unit, value_per_unit, value_pretty_print FROM real_estate_properties");
 		add_filter('query_vars', 'parameter_queryvars' );  
 		
 		return $output;
@@ -107,11 +107,9 @@ class Finanzes
 		$selection_fields = '';
 		
 			// make the list of fields to look for
-		if( $country == 'arms_trader')
-			$category = 'arms_trader';
-		if( $country == 'real_estate')
-			$category = 'real_estate';
-		
+		if(!$this->isCountry($country))
+			$category = $country;
+	
 		$property_name = $category . '_properties';
 	
 		foreach ($this->$property_name as $prop)
@@ -124,7 +122,12 @@ class Finanzes
 		
 
 		if ($includeTotals)
-			$selection_fields .= 'total_' . $category . 'costs';
+		{
+//			if( $this->isCountry($country) && $category == 'industry')
+//				$selection_fields .= 'total_production';
+//			else
+				$selection_fields .= 'balance';
+		}
 		else
 			$selection_fields = substr($selection_fields, 0, -2);
 			
@@ -212,7 +215,7 @@ class Finanzes
 					break;
 				default:
 					$operation = "lose";
-					$item = substr( $rest, 0, -5);
+					$item = substr( $rest, 0, $second_word_ends );
 					break;
 			}
 			
@@ -220,7 +223,7 @@ class Finanzes
 			$old_num = 0;
 			foreach($this->$property_name as $prop)
 			{
-				if ($prop->name == $item)
+				if (strpos($prop->name, $item) !== false )
 				{
 					$item_field = $prop->field_name;
 					break;
@@ -229,33 +232,52 @@ class Finanzes
 			
 			//$output .= ' operation = ' . $operation . ' field = ' . $item_field . ' item = ' . $item . '<br />';
 			$old_num = $theData->$item_field;
-			$new_num = $old_num;
-			$balance_field = 'total_' . $category . 'costs';
-			
-			//$output .= 'old_num = ' . $old_num . ' balance field = ' . $balance_field . ' on table ' . $tableName . '<br />';
-				
+			$new_num = $old_num;	
+			$balance_field = 'balance';
 
 			if( $operation == "sell" || $operation == "lose" || $operation == "use")
 			{
-				$new_num -= $prop->unit;
+				if( $operation == "lose" && $category == 'army')
+					$new_num -= $prop->loss_unit;
+				else
+					$new_num -= $prop->unit;
+					
 				$diff = $new_num - $old_num;	
-				$cost = $diff * $prop->cost_per_unit;		
+				$cost = $diff * $prop->value_per_unit;		
 				//$output .= 'diff = ' . $diff . ' cost = ' . $cost . '<br />';
-
+				
 				$this->updateValue( $tableName, $this->currentDay, $item_field, $new_num, false );
 				if( $operation == "sell")
+				{
+
 					$this->updateValue( $tableName, $this->currentDay, $balance_field, $cost, true );
-			
+					$bankTable = $country . '_bank';
+					$bankField = $category . '_received';
+					$this->updateValue( $bankTable, $this->currentDay, $bankField, $prop->resell_per_unit, true);
+					$traded = $diff * -1;
+					$this->updateValue( $prop->trader_table, $this->currentDay, $item_field, $diff, true);
+					$increased_value = $traded * $prop->resell_per_unit; // should be negative.  trader paid for this
+					$this->updateValue( $prop->trader_table, $this->currentDay, 'balance', $increased_value, true);
+				}			
 			}
 			else if ($operation == "buy")
 			{
 				$new_num += $prop->unit;
 				$diff = $new_num - $old_num;			
-				$cost = $diff * $prop->cost_per_unit;		
+				$cost = $diff * $prop->value_per_unit;		
 				//$output .= 'diff = ' . $diff . ' cost = ' . $cost . '<br />';
 				
 				$this->updateValue( $tableName, $this->currentDay, $item_field, $new_num, false );
 				$this->updateValue( $tableName, $this->currentDay, $balance_field, $cost, true );
+				
+				$bankTable = $country . '_bank';
+				$bankField = $category . '_paid';
+				$this->updateValue( $bankTable, $this->currentDay, $bankField, $prop->cost_per_unit, true);
+				
+				$traded = $diff * -1;
+				$this->updateValue( $prop->trader_table, $this->currentDay, $item_field, $traded, true);
+				$increased_value = $diff * $prop->cost_per_unit; // trader made money off of this
+				$this->updateValue( $prop->trader_table, $this->currentDay, 'balance', $increased_value, true);
 
 			}
 			
@@ -292,15 +314,15 @@ class Finanzes
 					if( isset( $theData->$field))
 					{
 						$num_items = $theData->$field;
-						$total_item_price = $num_items * $prop->cost_per_unit;	
+						$total_item_price = $num_items * $prop->value_per_unit;	
 						$unit_item_string = $prop->unit . ' ' . $prop->name;
 						$lost_item_string = $unit_item_string . ' Lost';
 						if( isset( $prop->loss_unit))
 							$lost_item_string = $prop->loss_unit . ' ' . $prop->name . ' ' . $prop->loss_print;  
 						$output .= '<tr><td><strong>' . $prop->description .' ' . $num_items . ' ' .  $prop->plural . '</strong>,';
-						$output .= $prop->cost_pretty_print . 'Total: $' . $total_item_price . '</td>';
+						$output .= $prop->value_pretty_print . 'Total: $' . $total_item_price . '</td>';
 			
-						if($this->viewDay == $this->currentDay)
+						if($this->viewDay == $this->currentDay && $this->isCountry($country))
 						{
 							$output .= '<td><input type="submit" name="change_numbers" value="Buy ' . $unit_item_string . '">';
 			
@@ -326,16 +348,20 @@ class Finanzes
 			}
 			else */
 			{
-				$balance_field = 'total_' . $category . 'costs';
-				$amt = 	$theData->$balance_field;
-				$output .= '<tr><td> ' . $category . ' ';
-				if( $amt < 0 )
+				$amt = 	$theData->balance;
+				$output .= '<tr><td> Balance ';
+			/*	if($this->isCountry($country))
 				{
-					$output .= 'Gain ';
-					$amt *= -1;
-				}
-				else
-					$output .= 'Costs ' ;
+					if( $amt < 0 )
+					{
+				
+						$output .= '(Gain) ';
+						$amt *= -1;
+					}
+					else
+						$output .= '(Costs)' ; 
+				}*/
+
 				$output .= '<input name="abs_costs" type="text" readonly="readonly" size="30" value="' . $amt . '"></td></tr>';
 				$output .= '</table>';
 
@@ -447,11 +473,11 @@ class Finanzes
 			{	
 				$field = $prop->field_name;
 				$num_items = $armyData->$field;
-				$total_item_price = $num_items * $prop->cost_per_unit;	
+				$total_item_price = $num_items * $prop->value_per_unit;	
 				$unit_item_string = $prop->unit . ' ' . $prop->pretty_name;
 				
 				$output .= '<tr><td><strong>' . $prop->description .' ' . $num_items . ' ' .  $prop->name . 's</strong>,';
-				$output .= $prop->cost_pretty_print . 'Total: $' . $total_item_price . '</td>';
+				$output .= $prop->value_pretty_print . 'Total: $' . $total_item_price . '</td>';
 			
 				if($this->viewDay == $this->currentDay)
 				{
@@ -481,10 +507,9 @@ class Finanzes
 				'country' => 'Central'), $atts ) );
 		
 		
-		if ($_POST['update'])
+		if (isset($_POST['update']))
 		{
 			$country = $_POST['country'];
-			$day = $_POST['day'];
 			$tableName = $country . '_population_log';
 			
 			foreach($this->population as $prop)
@@ -522,7 +547,6 @@ class Finanzes
 		if($data)
 		{	
 			$output .= '<form method="post" action="">';
-			$output .= '<input type="hidden" name="day" value="' . $day . '"><br />';
 			$output .= '<input type="hidden" name="country" value="' . $country . '"><br />';
 			$output .= '<table><tr>';
 			$output .= '<th></th><th>Quantity</th></tr>';
@@ -781,7 +805,9 @@ class Finanzes
 			$output .= '<form method="post" action="">';
 			$output .= '<input type="hidden" name="country" value="' . $country . '"><br />';
 			$output .= '<table>';
-			$output .= '<tr><th></th><th>Accounts Received</th><th>Accounts Payable</th></tr>';
+			$output .= '<tr><th></th><th>Accounts Payable</th><th>Accounts Received</th></tr>';
+			$pay_sum = 0;
+			$get_sum = 0;
 			foreach( $this->bank_properties as $prop)
 			{	
 				if (strtolower($prop->Name) == $country)
@@ -789,17 +815,21 @@ class Finanzes
 					
 				$paid_field = $prop->pay_field_name;
 				$received_field = $prop->received_field_name;
+				$pay_sum += $bankData->$paid_field;
+				$get_sum += $bankData->$received_field;
 				
-				$output .= '<tr><td>' . $prop->Name . '</td><td> <input class="bogus" name="'. $paid_field . '" type="text" size="30" value="' . $bankData->$paid_field . '" />';
-//				if( $this->viewDay < $this->currentDay)
-//					$output .= ' readonly="readonly"';
-				$output .='</td><td> <input class="bogus" name="'. $received_field . '" type="text" size="30" value="' . $bankData->$received_field . '" />';
-//				$old_field = $prop->pay_field_name . '_old';
-//				$output .= '<input name="'. $old_field . '" type="hidden" value="' . $bankData->$paid_field . '">';
-//				$old_field = $prop->received_field_name . '_old';
-//				$output .= '<input name="'. $old_field . '" type="hidden" value="' . $bankData->$received_field . '"></td></tr>';
+				$output .= '<tr><td>' . $prop->Name . '</td><td> <input name="'. $paid_field . '" type="text" size="30" value="' . $bankData->$paid_field . '" ';
+				if( $this->viewDay < $this->currentDay || $prop->readonly == 1)
+					$output .= ' readonly="readonly"';
+				$output .=' /></td><td> <input name="'. $received_field . '" type="text" size="30" value="' . $bankData->$received_field . '" />';
+				$old_field = $prop->pay_field_name . '_old';
+				$output .= '<input name="'. $old_field . '" type="hidden" value="' . $bankData->$paid_field . '">';
+				$old_field = $prop->received_field_name . '_old';
+				$output .= '<input name="'. $old_field . '" type="hidden" value="' . $bankData->$received_field . '"></td></tr>';
 		
 			}
+			$balance = $get_sum - $pay_sum;
+			$output .= '<tr><td>Balance</td><td></td><td><input name="balance" type="text" size="30" readonly="readonly" value="'. $balance . '" /></td></tr>';
 			$output .= '</table>';
 			if( $this->viewDay == $this->currentDay)
 				$output .= '<input type="submit" name="update" value="Update Accounts">';
@@ -815,12 +845,11 @@ class Finanzes
 		extract( shortcode_atts( array(
 				'country' => 'Central'), $atts ) );
 		$output = '';
-		if ($_POST['update'])
+		if (isset($_POST['update']))
 		{
 			$country = $_POST['country'];
-			$day = $_POST['day'];
 			$tableName = $country . '_taxes';
-			
+			$selection_fields = '';
 			foreach($this->taxes as $prop)
 			{
 				$is_tax = strpos($prop->field_name, "tax");
@@ -828,9 +857,35 @@ class Finanzes
 				{	
 					$rate_field = $prop->field_name;
 					$new_amt = $_POST[$rate_field];
-					$this->updateValue( $tableName, $this->currentDay, $rate_field, $new_amt, false );
+					$this->updateValue( $tableName, $this->currentDay, $rate_field, $new_amt, false );	
+					$selection_fields .= $prop->field_name . ', ';
+					$selection_fields .= $prop->money_recd_field_name . ', ';
+				
 				}
 			}
+
+			// results of new rates
+			$bankTable = $country . '_bank';
+			$this->calculateProduction( $country, $this->currentDay );
+			$industryTable = $country . '_industry_log';
+			$productionData = $this->FinanzesDB->get_row("SELECT construction_produced, energy_produced, water_produced, food_produced, total_production FROM $industryTable WHERE day=$this->currentDay");
+			$popTable = $country . '_population_log';
+			$num_cities = $this->FinanzesDB->get_var("SELECT cities FROM $popTable WHERE day=$this->currentDay");
+			
+			
+			$selection_fields .= 'total_taxes';
+			$taxData = $this->FinanzesDB->get_row("SELECT " . $selection_fields . " FROM " . $tableName . " WHERE day = " . $this->currentDay  );
+			
+			$income_tax_recd = ($taxData->income_tax_rate/100) * $productionData->total_production;
+			$property_tax_recd = ($taxData->property_tax_rate/100) * $num_cities * 10000 * 50000;	
+			$sales_tax_recd = ($taxData->sales_tax_rate/100) * $productionData->total_production;
+			$total_tax_recd = $income_tax_recd + $property_tax_recd + $sales_tax_recd;
+			$this->updateValue($tableName, $this->currentDay, 'income_taxes', $income_tax_recd, false);
+			$this->updateValue($tableName, $this->currentDay, 'property_taxes', $property_tax_recd, false);
+			$this->updateValue($tableName, $this->currentDay, 'sales_taxes', $sales_tax_recd, false);
+			$this->updateValue($tableName, $this->currentDay, 'total_taxes', $total_tax_recd, false);
+			$this->updateValue($bankTable, $this->currentDay, 'taxes_received', $total_tax_recd, false);
+			
 		}
 	
 		$output .= $this->LoadCountryHeader( $country );
@@ -860,7 +915,6 @@ class Finanzes
 		if($data)
 		{	
 			$output .= '<form method="post" action="">';
-			$output .= '<input type="hidden" name="day" value="' . $day . '"><br />';
 			$output .= '<input type="hidden" name="country" value="' . $country . '"><br />';
 			$output .= '<table><tr>';
 			$output .= '<th></th><th>Rate</th><th>Money Received</th></tr>';
@@ -894,26 +948,74 @@ class Finanzes
 		extract( shortcode_atts( array(
 				'country' => 'Central'), $atts ) );
 
-		if ($_POST['update'])
+		if (isset($_POST['update']))
 		{
 			$country = $_POST['country'];
-			$day = $_POST['day'];
 			$tableName = $country . '_govprograms_log';
-			
+			$selection_fields = '';
+			$tax_selection = '';
 			foreach($this->taxes as $prop)
 			{
 				$is_tax= strpos($prop->field_name, "tax");
-				if($is_tax === false)
-				{		
+				if( $is_tax === false )
+				{
 					$rate_field = $prop->field_name;
 					$new_amt = $_POST[$rate_field];
 					$this->updateValue( $tableName, $this->currentDay, $rate_field, $new_amt, false );
+					$selection_fields .= $prop->field_name . ', ';
+					$selection_fields .= $prop->money_recd_field_name . ', ';
 				}
+				else
+				{
+					$tax_selection .= $prop->field_name . ', ';
+					$tax_selection .= $prop->money_recd_field_name . ', ';
+				}
+			}
+			$selection_fields .= 'government_total';
+			$tax_selection .= 'total_taxes';
+
+			// results of new rates
+			$bankTable = $country . '_bank';
+			$this->calculateProduction( $country, $this->currentDay );
+			$industryTable = $country . '_industry_log';
+			$productionData = $this->FinanzesDB->get_row("SELECT construction_produced, energy_produced, water_produced, food_produced, total_production FROM $industryTable WHERE day=$this->currentDay");
+			$popTable = $country . '_population_log';
+			$num_cities = $this->FinanzesDB->get_var("SELECT cities FROM $popTable WHERE day=$this->currentDay");
+			$taxTable = $country . '_taxes';			
+			
+			$taxData = $this->FinanzesDB->get_row("SELECT " . $tax_selection . " FROM " . $taxTable . " WHERE day = " . $this->currentDay  );			
+			$income_tax_recd = ($taxData->income_tax_rate/100) * $productionData->total_production;
+			$property_tax_recd = ($taxData->property_tax_rate/100) * $num_cities * 10000 * 50000;	
+			$sales_tax_recd = ($taxData->sales_tax_rate/100) * $productionData->total_production;
+			$total_tax_recd = $income_tax_recd + $property_tax_recd + $sales_tax_recd;
+		
+			$progData = $this->FinanzesDB->get_row("SELECT " . $selection_fields . " FROM " . $tableName . " WHERE day = " . $this->currentDay  );
+
+			if($progData)
+			{
+				$money_paid = 0;
+				$total_money = 0;
+				foreach( $this->taxes as $prop)
+				{	
+					$is_tax= strpos($prop->field_name, "tax");
+					if( $is_tax === false )
+					{
+						$rate_field = $prop->field_name;		
+						$money_field = $prop->money_recd_field_name;
+						$this_money = ($progData->$rate_field / 100) * $total_tax_recd;
+						$total_money += $this_money;
+						if( $prop->field_name == 'health_pct' || $prop->field_name == 'educ_pct')
+							$money_paid += $this_money;
+						$this->updateValue($tableName, $this->currentDay, $money_field, $this_money, false);
+					}
+				}
+				$this->updateValue($tableName, $this->currentDay, 'government_total', $total_money , false);
+				$this->updateValue($bankTable, $this->currentDay, 'govt_programs_paid', $money_paid, false);
 			}
 		}		
 		$output = $this->LoadCountryHeader( $country );
 		
-		$output .= '<strong>' . $country . ' Government Programs Day ' . $this->viewDay . ' </strong><br /><br />';
+		$output .= '<strong>' . $country . ' Government Programs Budget Day ' . $this->viewDay . ' </strong><br /><br />';
 		$country = strtolower( $country );
 		$tableName = $country . '_govprograms_log';
 		
@@ -938,7 +1040,6 @@ class Finanzes
 		if($data)
 		{	
 			$output .= '<form method="post" action="">';
-			$output .= '<input type="hidden" name="day" value="' . $day . '"><br />';
 			$output .= '<input type="hidden" name="country" value="' . $country . '"><br />';
 			$output .= '<table><tr>';
 			$output .= '<th></th><th>Rate</th><th>Money Used</th></tr>';
@@ -978,7 +1079,6 @@ class Finanzes
 		
 		$output .= '<strong>' . $country . ' Consumption Day ' . $this->viewDay . ' </strong><br /><br />';
 		$country = strtolower($country);
-		$category = strtolower($category);
 		
 		$tableName = $country . '_consumption';
 		
@@ -996,7 +1096,6 @@ class Finanzes
 		if($data)
 		{	
 			$output .= '<form method="post" action="">';
-			$output .= '<input type="hidden" name="day" value="' . $day . '"><br />';
 			$output .= '<input type="hidden" name="country" value="' . $country . '"><br />';
 			$output .= '<table>';
 	
@@ -1016,22 +1115,44 @@ class Finanzes
 	function carryValuesForward( $country, $category, $oldDay, $newDay)
 	{
 		$tableName = strtolower($country) . '_' . $category . '_log';
+		$add_consumption = true;
+		$output = '';
+		
 		if($country == 'arms_trader')
+		{
+			$add_consumption = false;
 			$tableName = 'arms_trader';
+		}
 		if($country == 'real_estate')
+		{
+			$add_consumption = false;
 			$tableName = 'real_estate_developer';
-			
-		$selection_fields = $this->getSelectionFields($country, $category, false);
+		}
+		$selection_fields = $this->getSelectionFields($country, $category, true);
 		if($selection_fields == '')
 			return;
-			
+				
+		
+		$output .= 'selecting ' . $selection_fields . '<br />';
+
+		
 		$theData = $this->FinanzesDB->get_row("SELECT " . $selection_fields . " FROM " . $tableName . " WHERE day = " . $oldDay );
+		$oldData = $theData;
+		if($oldDay != 0)
+		{
+			$superOldDay = $oldDay -1;
+			$oldData = $this->FinanzesDB->get_row("SELECT " . $selection_fields . " FROM " . $tableName . " WHERE day = " . $oldDay );
+		}
 		$property_name = $category . '_properties';
-		$output = 'carry Value Forward for ' . $country . ' ' . $category . '<br />';
+		$output .= 'carry Value Forward for ' . $country . ' ' . $category . '<br />';
 		$output .= 'property_name = ' . $property_name . '<br />';
+		$category_properties = $this->$property_name;
+		if( $add_consumption  )
+			$category_properties = $this->FinanzesDB->get_results("SELECT description, name, plural, field_name, unit, value_per_unit, value_pretty_print, initial_energy_cost, ongoing_energy_cost, initial_construction_cost FROM $property_name");
+		
 		if($theData)
 		{	
-			foreach($this->$property_name as $prop)
+			foreach($category_properties as $prop)
 			{
 				$skip = false;
 				if (!$this->fieldInCountry( $prop->field_name, $country))
@@ -1044,13 +1165,36 @@ class Finanzes
 					if(isset($theData->$field))
 					{
 						$num_items = $theData->$field;
-						$pos = strpos( $prop->field_name, "total");
-						if( $pos === false)
+						$old_items = $oldData->$field;
+						$diff = $num_items - $old_items;
+						//$pos = strpos( $prop->field_name, "total");
+						//if( $pos === false)
 							$this->updateValue($tableName, $newDay, $field, $num_items, false);
-						else
-							$this->updateValue($tableName, $newDay, $field, 0, false);
+						//else
+						//	$this->updateValue($tableName, $newDay, $field, 0, false);
+						
+						if ($add_consumption)
+						{
+							//update consumption based on our actions
+							$consumptionTable = $country . '_consumption';
+							$energy_consumed = $old_items * $prop->ongoing_energy_cost;
+							if ($diff > 0)
+							{
+								$energy_consumed = $prop->initial_energy_cost;
+								$construction_used = $prop->initial_construction_cost;
+								$this->updateValue($consumptionTable, $newDay, 'const_mat_consumed', $construction_used, true);
+
+							}
+							$this->updateValue($consumptionTable, $newDay, 'energy_consumed', $energy_consumed, true);
+						}
 					}
 				}
+			}
+			if( $this->isCountry($country))
+			{
+				// carry forward the balance		
+				$old_bal = $theData->balance;
+				$this->updateValue($tableName, $newDay, 'balance', $old_bal, false);
 			}
 		}
 		return $output;
@@ -1079,43 +1223,349 @@ class Finanzes
 			}			
 		}
 	}
+	function updateTaxesAndGovtProgs( $country, $oldDay, $newDay)
+	{
+		$taxTable = $country . '_taxes';
+		$output = '';		
+		$selection_fields = '';
+		// make the list of fields to look for
+		foreach ($this->taxes as $prop)
+		{
+			$is_tax= strpos($prop->field_name, "tax");
+			if($is_tax !== false)
+			{
+				$selection_fields .= $prop->field_name . ', ';
+				$selection_fields .= $prop->money_recd_field_name . ', ';
+			}
+		}
+		$selection_fields .= 'total_taxes';
+		$taxData = $this->FinanzesDB->get_row("SELECT " . $selection_fields . " FROM " . $taxTable . " WHERE day = " . $oldDay  );
+		
+		
+		$selection_fields = '';
+		$popTable = $country .'_population_log';
+		foreach ($this->population as $prop)
+		{
+			$selection_fields .= $prop->field_name . ', ';
+		}
+		
+		$selection_fields = substr($selection_fields, 0, -2);
+		
+		$popData = $this->FinanzesDB->get_row("SELECT " . $selection_fields . " FROM " . $popTable . " WHERE day = " . $oldDay  );
+		
+		
+		$industryTable = $country . '_industry_log';
+		$productionData = $this->FinanzesDB->get_row("SELECT construction_produced, energy_produced, water_produced, food_produced, total_production FROM $industryTable WHERE day=$oldDay");
+
+
+		$income_tax_recd = ($taxData->income_tax_rate/100) * $productionData->total_production;
+		$property_tax_recd = ($taxData->property_tax_rate/100) * $popData->cities * 10000 * 50000;	
+		$sales_tax_recd = ($taxData->sales_tax_rate/100) * $productionData->total_production;
+		$total_tax_recd = $income_tax_recd + $property_tax_recd + $sales_tax_recd;
+
+		
+		$this->updateValue($taxTable, $newDay, 'income_taxes', $income_tax_recd, false);
+		$setVal = $this->FinanzesDB->get_var("SELECT income_taxes FROM $taxTable WHERE day=$newDay");
+		$this->updateValue($taxTable, $newDay, 'property_taxes', $property_tax_recd, false);
+		$this->updateValue($taxTable, $newDay, 'sales_taxes', $sales_tax_recd, false);
+		$this->updateValue($taxTable, $newDay, 'total_taxes', $total_tax_recd, false);
+
+
+		$progTable = $country . '_govprograms_log';
+		$selection_fields = '';
+		foreach($this->taxes as $prop)
+		{
+			$is_tax= strpos($prop->field_name, "tax");
+			if($is_tax === false)
+			{		
+				$selection_fields .= $prop->field_name . ', ';
+				$selection_fields .= $prop->money_recd_field_name . ', ';
+			}
+		}
+		$selection_fields .= 'government_total';
+
+		$progData = $this->FinanzesDB->get_row("SELECT " . $selection_fields . " FROM " . $progTable . " WHERE day = " . $oldDay  );
+		if($progData)
+		{
+			foreach( $this->taxes as $prop)
+			{	
+				$is_tax= strpos($prop->field_name, "tax");
+				if( $is_tax === false)
+				{
+					$rate_field = $prop->field_name;
+					$money_field = $prop->money_recd_field_name;
+					
+					$money_recd = ($progData->$rate_field / 100) * $total_tax_recd;
+					$this->updateValue($progTable, $newDay, $money_field, $money_recd, false);
+				}
+			}
+		}
+	return $output;		
+	}
+		
+/*	function updateTaxes($country, $oldDay, $newDay)
+	{
+		$taxTable = $country . '_taxes';
+		$selection_fields = '';
+		
+		// make the list of fields to look for
+		foreach ($this->population as $prop)
+		{
+			$selection_fields .= $prop->field_name . ', ';
+		}
+		
+		$selection_fields = substr($selection_fields, 0, -2);
+		
+		$data = $this->FinanzesDB->get_row("SELECT " . $selection_fields . " FROM " . $tableName . " WHERE day = " . $this->viewDay  );
+		if($data)
+		{	
+			foreach( $this->population as $prop)
+			{	
+				$field = $prop->field_name;
+				
+				switch($prop->field_name)
+				{
+					case "income_tax_rate":
+					case "sales_tax_rate":
+					case "property_tax_rate":
+						$this->updateValue($popTable, $newDay, $prop->field_name, $data->$field);
+						break;
+					case "income_taxes":
+					case "sales_taxes":
+					case "property_taxes":				
+						break;
+					case "total_taxes":
+						break;
+				}
+			}
+		}			
+	}
+*/
 	
+	function calculateProduction( $country, $day)
+	{
+		$industryTable = $country . '_industry_log';
+				
+		$industrySelection = $this->getSelectionFields( $country, 'industry', false);
+		$industry_data = $this->FinanzesDB->get_row("SELECT " . $industrySelection . " FROM " . $industryTable .  " WHERE day= " . $day );
+		$construction_produced = $industry_data->num_constructionmaterialproducers * 3000;
+		$energy_produced = ($industry_data->num_oilwells + $industry_data->num_alternativeenergy) * 150000;
+		$water_produced = $industry_data->num_waterproducers * 50000000;
+		$food_produced = $industry_data->num_foodproducers * 75000;
+		$total_production = ($construction_produced*5) + ($energy_produced*100) + ($water_produced*.007) + ($food_produced*3);
+		
+		$this->updateValue($industryTable, $day, 'construction_produced', $construction_produced, false);
+		$this->updateValue($industryTable, $day, 'energy_produced', $energy_produced, false);
+		$this->updateValue($industryTable, $day, 'water_produced', $water_produced, false);
+		$this->updateValue($industryTable, $day, 'food_produced', $food_produced, false);
+		$this->updateValue($industryTable, $day, 'total_production', $total_production, false);
+		
+		$energy_consumed = ($food_produced * .1) + ($water_produced * .01);
+		$consumptionTable = $country . '_consumption';
+		$this->updateValue($consumptionTable, $day, 'energy_consumed', $energy_consumed, true);
+		
+	/*	if($day == 0)
+		{
+			$popTable = $country . '_population_log';
+			$populationData = $this->FinanzesDB->get_row("SELECT population, unemployment_rate FROM $popTable WHERE day=0");
+			$employable = $populationData->population / 2;
+			$unemployed = $employable * ($populationData->unemployment_rate/100);
+			$employed = $employable - $unemployed;
+			$liveable_wage = $total_production / $employed;
+			$output .= $country . 'Total Production=' . $total_production . '<br />';
+			$output .= $country . 'Population=' . $populationData->population . '<br />';
+			$output .= $country . 'Unemployment Rate=' . $populationData->unemployment_rate. '<br />';
+			$output .= $country . 'Number Employed=' . $employed. '<br />';
+			$output .= '<strong> So ' . $country . 'Liveable Wage=' . $liveable_wage. '</strong><br />';
+			
+			$homeTable = $country . '_home';
+			$this->updateValue($homeTable, $day, 'liveable_wage', $liveable_wage, false);
+		}*/
+		
+	}
+	
+	function updatePopulationAndConsumption($country, $oldDay, $newDay)
+	{
+			
+		$popTable = $country . '_population_log';
+		$industryTable = $country . '_industry_log';
+		$selection_fields = '';
+		$homeTable = $country . '_home';
+		$liveable_wage = $this->FinanzesDB->get_var("SELECT liveable_wage FROM $homeTable WHERE day=0");
+		$productionData = $this->FinanzesDB->get_row("SELECT construction_produced, energy_produced, water_produced, food_produced, total_production FROM $industryTable WHERE day=$oldDay");
+		
+		$output = '';
+		
+		// make the list of fields to look for
+		foreach ($this->population as $prop)
+		{
+			$selection_fields .= $prop->field_name . ', ';
+		}
+		
+		$selection_fields = substr($selection_fields, 0, -2);
+		
+		$data = $this->FinanzesDB->get_row("SELECT " . $selection_fields . " FROM " . $popTable . " WHERE day = " . $oldDay  );
+		if($data)
+		{	
+			$old_pop = $data->population;
+			$rate = $data->pop_growth_rate/100;
+			$new_pop = $old_pop * (1.0+($rate/12));
+			$employable = $old_pop * .5;
+			$unemployed = $employable * ($data->unemployment_rate/100);
+			$employed = $employable - $unemployed;
+			$net_immigration = 0;
+			$food_consumed = $old_pop * 3;
+			$water_consumed = $old_pop;
+			$old_cities = $data->cities;
+			
+			if( strtolower($country) == 'filios')
+			{
+				$intelibus_unemployment = $this->FinanzesDB->get_var("SELECT unemployment_rate FROM intelibus_population_log WHERE day= ".$oldDay );
+				$num_attempted = $intelibus_unemployment * 100;
+				$num_caught = $num_attempted * .2;
+				$net_immigration = $num_attempted - $num_caught;
+				$food_consumed = $old_pop * 4;
+				$water_consumed = $old_pop * 50;
+				//$output .= 'filios gained ' . $net_immigration . ' people immigrating <br />';
+			}
+			if( strtolower($country) == 'intelibus')
+			{
+				$num_attempted = $data->unemployment_rate * 100;
+				$num_returned = $num_attempted * .2;
+				$net_immigration = $num_returned - $num_attempted; // this should be negative
+				$water_consumed = 0;
+				//$output .= 'intelibus lost ' .$net_immigration . ' people <br />';
+				
+			}
+			
+			$consumptionTable = $country . '_consumption';
+			$this->updateValue($consumptionTable, $newDay, 'food_consumed', $food_consumed, true);
+			$this->updateValue($consumptionTable, $newDay, 'water_consumed', $water_consumed, true);
+			
+			
+			//$output .= $country . 'unemployment rate = '. $data->unemployment_rate . ' so there are ' .$employed . 'people working, and ' . $unemployed . ' people unemployed.  Population is ' . $data->population . '<br />';
+			foreach( $this->population as $prop)
+			{	
+				$field = $prop->field_name;
+				
+				switch($prop->field_name)
+				{
+					case "population":
+						$this->updateValue($popTable, $newDay, $prop->field_name, $new_pop, false);
+						break;
+					case "num_immigrated":
+						$this->updateValue($popTable, $newDay, $prop->field_name, $net_immigration, false);
+						break;
+					case "unemployment_rate":
+						$unemployment_rate = ($unemployed/$employable) * 100;
+						//$output .= 'unemployment rate = ' . $unemployment_rate . '<br />';
+						$this->updateValue($popTable, $newDay, $prop->field_name, $unemployment_rate, false);
+						break;
+					case "salaries":
+						$salaries = $productionData->total_production / $employed;
+						$this->updateValue($popTable, $newDay, $prop->field_name, $salaries, false);
+						break;
+					case "pop_growth_rate":						
+						$this->updateValue($popTable, $newDay, $prop->field_name, $data->$field, false);
+						break;
+					case "cities":
+						$new_cities = $data->$field;
+						$energy_consumed = 10000 * $old_cities;
+						$cities_built = $new_cities - $old_cities;
+						$consumptionTable = $country . '_consumption';
+						if ($cities_built > 0)
+						{
+							$construction_used = $cities_built * 1000000;
+							$this->updateValue($consumptionTable, $newDay, 'const_mat_consumed', $construction_used, true);
+
+							$energy_consumed += $cities_built * 500000;
+						}
+						$this->updateValue($consumptionTable, $newDay, 'energy_consumed', $energy_consumed, true);
+						$this->updateValue($popTable, $newDay, $prop->field_name, $data->$field, false);
+						break;
+				}
+			}
+		}	
+		return $output;		
+	}
+	
+	function isCountry($name)
+	{
+		if(strtolower($name)=='xtensica' || strtolower($name)=='filios' || strtolower($name)=='intelibus')
+			return true;
+		return false;
+	}
 	
 	function closeDay()
 	{
 		$newDay = $this->currentDay +1;
+
 		// army_properties
-		$output = 'close Day ' . $this->currentDay .'<br />';
+		$output = '<strong>close Day ' . $this->currentDay .'</strong><br />';
 		foreach($this->entities as $ent)
 		{
+			$skip = false;
 			$country = strtolower($ent->Name);
+			
 			if( $ent->Name == 'Arms Trader')
 			{
 				$category = $country = 'arms_trader';
 			}
-			if( $ent->Name == 'Real Estate Developer')
+			else if( $ent->Name == 'Real Estate Developer')
 			{
 				$category = $country = 'real_estate';
 			}
-			$skip = false;
-			if( $ent->Name == 'Central Bank')
+			else if( $ent->Name == 'Central Bank')
 			{
-				// do central bank stuff
+				$selection_fields = '';
+				foreach ($this->entities as $ent)
+				{
+					if($ent->Name != "Central Bank")
+					{
+						$balance_field = $ent->external_bank_field . '_balance';
+						$loan_field = $ent->external_bank_field . '_loan';
+			
+						$selection_fields .= $balance_field . ', ' . $loan_field . ', ';
+					}
+				}
+				$selection_fields = substr($selection_fields, 0, -2);
+
+				$bankData = $this->FinanzesDB->get_row("SELECT " . $selection_fields . " FROM central_bank WHERE day = " . $this->currentDay . " ORDER BY id" );
+				if($bankData)			
+				{
+					foreach( $this->entities as $ent2)
+					{	
+						if($ent2->Name != "Central Bank")
+						{	
+							$balance_field = $ent2->external_bank_field . '_balance';
+							$loan_field = $ent2->external_bank_field . '_loan';
+										
+							$this->updateValue('central_bank', $newDay, $balance_field, $bankData->$balance_field, false);
+							$this->updateValue('central_bank', $newDay, $loan_field, $bankData->$loan_field, false);
+						}
+					}
+				}
 				$skip = true;
 			}
+			else 
+			{ // this stuff applies only to countries
+				$output .= $this->calculateProduction($country, $this->currentDay);
+				$output .= $this->updatePopulationAndConsumption( $country, $this->currentDay, $newDay);
+				$output .= $this->updateTaxesAndGovtProgs($country, $this->currentDay, $newDay);
+			}
 			
-			if (!$skip)
-			{
+			
+			if(!$skip)
+			{ // this stuff applies to all entities but central bank
 				$traders = array('army', 'industry');
 				foreach($traders as $category)
 				{
 					$output .= $this->carryValuesForward( $country, $category ,$this->currentDay, $newDay);
 				}
-				$output .= $this->initializeBank($country, $this->currentDay, $newDay);
-
+				$output .= $this->initializeBank($country, $this->currentDay, $newDay);	
 			}	
 		}
-		return $output;
+		//return $output;
 	}
 		
 	function GameHome( $country, $day )
@@ -1123,12 +1573,11 @@ class Finanzes
 		$output = '';
 		if( isset($_POST['endDay']) )
 		{
-			$this->closeDay();
+			$output .= $this->closeDay();
 			$newDay = $this->currentDay + 1;
-			$output .= 'new day is ' . $newDay . '<br />';
 			$this->FinanzesDB->query(" UPDATE game_state SET current_day = $newDay, viewing_day = $newDay WHERE id = 1");
 			
-			$output .= $this->InitDB();
+			$this->InitDB();
 		}
 		if( isset($_POST['viewPast']) )
 		{
@@ -1193,7 +1642,7 @@ class Finanzes
 		$output .= '<td><a href="../' . $country .'-population/"> Population </a></td>';
 		$output .= '<td><a href="../' . $country .'-bank/"> Bank Account </a></td>';
 		$output .= '<td><a href="../' . $country .'-tax/"> Taxes </a></td>';
-		$output .= '<td><a href="../' . $country .'-government-programs/"> Government Programs </a></td>';
+		$output .= '<td><a href="../' . $country .'-government-programs/"> Government Programs Budget </a></td>';
 				$output .= '<td><a href="../' . $country .'-consumption/"> Consumption </a></td>';
 		$output .= '</tr></table>';	
 		return $output;
@@ -1208,6 +1657,7 @@ class Finanzes
 		$output .= $this->LoadCountryHeader( $country );
 		
 		$output .= '<strong>Welcome to ' . $country . '.  Day ' . $this->viewDay;
+		$readonly = false;
 		if ($this->viewDay == $this->currentDay)
 		{
 			$output .= ' (today).<br />';
@@ -1218,7 +1668,7 @@ class Finanzes
 			$output .= ' (has ended). <br />';
 			$readonly = true;
 		}
-
+		$printCountry = $country;
 		$country = strtolower($country);
 		$tableName = $country . '_home';
 				
@@ -1233,14 +1683,15 @@ class Finanzes
 			{
 				$randWeather = rand(1, count( $this->weathers));
 				$this->updateValue( $tableName, $this->currentDay, "weather_id", $randWeather, false);
+				$readonly = true;
 			}
 		}
-
+		$dayWeather = '';
 		$dayWeather = $this->FinanzesDB->get_var("SELECT description FROM available_weather, $tableName WHERE available_weather.id = $tableName.weather_id AND $tableName.day  = $this->viewDay");		
 		
 		$output .= '<form method="post" action="">';
 		$output .= 'Weather Report <br />';
-		
+
 	/*	$output .= '<select name="weatherSelect">';
 		foreach( $this->weathers as $w)
 		{
@@ -1251,13 +1702,17 @@ class Finanzes
 		}
 		$output .= '</select>';
 	*/		
-		$output .= '<input type="text" name="weather-input" length="25" readonly="' . $readonly . '" value="' . $dayWeather . '">';
-		if ($readonly == false)
+		$output .= '<input type="text" name="weather-input" length="25" readonly="readonly" value="' . $dayWeather . '">';
+		if ($readonly == false && $dayWeather == '')
 		{
 		//	$output .= '<input type="submit" name="weather" value="Set Weather">';
 			$output .= '<input type="submit" name="weather" value="Randomly Choose Weather"><br />';
 		}		
 		$output .= '</form>';
+		
+//		$liveable_wage = $this->FinanzesDB->get_var("SELECT liveable_wage FROM $tableName WHERE day=0");
+
+//		$output .= '<br /><br /> The minimum liveable wage in '. $printCountry . ' is $' . $liveable_wage . ' per month. <br />'; 
 		
 		return $output;						
 	} 
