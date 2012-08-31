@@ -107,8 +107,8 @@ class Finanzes
 		$selection_fields = '';
 		
 			// make the list of fields to look for
-		if(!$this->isCountry($country))
-			$category = $country;
+//		if(!$this->isCountry($country))
+//			$category = $country;
 	
 		$property_name = $category . '_properties';
 	
@@ -254,11 +254,15 @@ class Finanzes
 					$bankTable = $country . '_bank';
 					$bankField = $category . '_received';
 					$this->updateValue( $bankTable, $this->currentDay, $bankField, $prop->resell_per_unit, true);
-					$traded = $diff * -1;
-					$this->updateValue( $prop->trader_table, $this->currentDay, $item_field, $diff, true);
-					$increased_value = $traded * $prop->resell_per_unit; // should be negative.  trader paid for this
-					$this->updateValue( $prop->trader_table, $this->currentDay, 'balance', $increased_value, true);
-				}			
+					
+					if (isset( $prop->trader_table) && $prop->trader_table != '0')
+					{
+						$traded = $diff * -1;
+						$this->updateValue( $prop->trader_table, $this->currentDay, $item_field, $diff, true);
+						$increased_value = $traded * $prop->resell_per_unit; // should be negative.  trader paid for this
+						$this->updateValue( $prop->trader_table, $this->currentDay, 'balance', $increased_value, true);
+					}	
+				}		
 			}
 			else if ($operation == "buy")
 			{
@@ -266,7 +270,7 @@ class Finanzes
 				$diff = $new_num - $old_num;			
 				$cost = $diff * $prop->value_per_unit;		
 				//$output .= 'diff = ' . $diff . ' cost = ' . $cost . '<br />';
-				
+				//$output .= 'tableName=' . $tableName . '<br />';
 				$this->updateValue( $tableName, $this->currentDay, $item_field, $new_num, false );
 				$this->updateValue( $tableName, $this->currentDay, $balance_field, $cost, true );
 				
@@ -274,11 +278,13 @@ class Finanzes
 				$bankField = $category . '_paid';
 				$this->updateValue( $bankTable, $this->currentDay, $bankField, $prop->cost_per_unit, true);
 				
-				$traded = $diff * -1;
-				$this->updateValue( $prop->trader_table, $this->currentDay, $item_field, $traded, true);
-				$increased_value = $diff * $prop->cost_per_unit; // trader made money off of this
-				$this->updateValue( $prop->trader_table, $this->currentDay, 'balance', $increased_value, true);
-
+				if (isset( $prop->trader_table) && $prop->trader_table != '0')
+				{
+					$traded = $diff * -1;
+					$this->updateValue( $prop->trader_table, $this->currentDay, $item_field, $traded, true);
+					$increased_value = $diff * $prop->cost_per_unit; // trader made money off of this
+					$this->updateValue( $prop->trader_table, $this->currentDay, 'balance', $increased_value, true);
+				}
 			}
 			
 		}
